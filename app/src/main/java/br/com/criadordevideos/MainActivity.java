@@ -24,6 +24,7 @@ import android.widget.Toast;
 import android.widget.VideoView;
 
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MediaItem.ClippingConfiguration;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.transformer.Composition;
 import androidx.media3.transformer.EditedMediaItem;
@@ -46,6 +47,8 @@ public class MainActivity extends Activity {
     private TextView titleOverlay;
     private EditText projectName;
     private EditText overlayText;
+    private EditText trimStartSeconds;
+    private EditText trimEndSeconds;
     private Uri videoUri;
     private Uri audioUri;
     private Uri exportedUri;
@@ -129,6 +132,25 @@ public class MainActivity extends Activity {
         importRow.addView(addPhotos, weightParams());
         importRow.addView(addMusic, weightParams());
         root.addView(importRow);
+
+        LinearLayout trimRow = new LinearLayout(this);
+        trimRow.setOrientation(LinearLayout.HORIZONTAL);
+        trimStartSeconds = new EditText(this);
+        trimStartSeconds.setSingleLine(true);
+        trimStartSeconds.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        trimStartSeconds.setTextColor(Color.WHITE);
+        trimStartSeconds.setHintTextColor(Color.GRAY);
+        trimStartSeconds.setHint("Início (segundos)");
+        trimEndSeconds = new EditText(this);
+        trimEndSeconds.setSingleLine(true);
+        trimEndSeconds.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        trimEndSeconds.setTextColor(Color.WHITE);
+        trimEndSeconds.setHintTextColor(Color.GRAY);
+        trimEndSeconds.setHint("Fim (segundos)");
+        trimRow.addView(trimStartSeconds, weightParams());
+        trimRow.addView(trimEndSeconds, weightParams());
+        root.addView(label("Cortar vídeo: início e fim em segundos (fim vazio = até o final)"));
+        root.addView(trimRow);
 
         overlayText = new EditText(this);
         overlayText.setSingleLine(true);
@@ -261,7 +283,22 @@ public class MainActivity extends Activity {
         status.setText("Exportando MP4... mantenha o aplicativo aberto até concluir.");
         exporting = true;
         try {
-            EditedMediaItem editedItem = new EditedMediaItem.Builder(MediaItem.fromUri(videoUri)).build();
+            double startSeconds = parseSeconds(trimStartSeconds.getText().toString());
+            double endSeconds = parseSeconds(trimEndSeconds.getText().toString());
+            if (startSeconds < 0 || endSeconds < 0 || (endSeconds > 0 && endSeconds <= startSeconds)) {
+                exporting = false;
+                status.setText("Corte inválido: o fim precisa ser maior que o início.");
+                toast("Confira os segundos do corte.");
+                return;
+            }
+            MediaItem.Builder mediaBuilder = new MediaItem.Builder().setUri(videoUri);
+            if (startSeconds > 0 || endSeconds > 0) {
+                ClippingConfiguration.Builder clipping = new ClippingConfiguration.Builder()
+                        .setStartPositionMs((long) (startSeconds * 1000));
+                if (endSeconds > 0) clipping.setEndPositionMs((long) (endSeconds * 1000));
+                mediaBuilder.setClippingConfiguration(clipping.build());
+            }
+            EditedMediaItem editedItem = new EditedMediaItem.Builder(mediaBuilder.build()).build();
             transformer = new Transformer.Builder(this)
                     .addListener(new Transformer.Listener() {
                         @Override
@@ -304,6 +341,8 @@ public class MainActivity extends Activity {
                 .putString("audio", audioUri == null ? "" : audioUri.toString())
                 .putString("photos", joinUris(photoUris))
                 .putString("overlay", overlayText.getText().toString())
+                .putString("trimStart", trimStartSeconds.getText().toString())
+                .putString("trimEnd", trimEndSeconds.getText().toString())
                 .apply();
         status.setText("Projeto salvo neste celular.");
         toast("Projeto salvo.");
@@ -314,6 +353,8 @@ public class MainActivity extends Activity {
         projectName.setText(prefs.getString("name", "Meu vídeo"));
         String overlay = prefs.getString("overlay", "");
         overlayText.setText(overlay);
+        trimStartSeconds.setText(prefs.getString("trimStart", ""));
+        trimEndSeconds.setText(prefs.getString("trimEnd", ""));
         titleOverlay.setText(overlay);
         titleOverlay.setVisibility(overlay.isEmpty() ? View.GONE : View.VISIBLE);
         String savedVideo = prefs.getString("video", "");
@@ -331,6 +372,12 @@ public class MainActivity extends Activity {
         if (!savedPhotos.isEmpty()) {
             for (String item : savedPhotos.split("\\n")) if (!item.isEmpty()) photoUris.add(Uri.parse(item));
         }
+    }
+
+    private double parseSeconds(String value) {
+        if (value == null || value.trim().isEmpty()) return 0;
+        try { return Double.parseDouble(value.trim().replace(',', '.')); }
+        catch (NumberFormatException e) { return -1; }
     }
 
     private String joinUris(ArrayList<Uri> uris) {
