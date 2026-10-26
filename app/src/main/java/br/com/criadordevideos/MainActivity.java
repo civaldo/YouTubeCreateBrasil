@@ -9,6 +9,7 @@ import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -22,9 +23,19 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.VideoView;
 
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.util.UnstableApi;
+import androidx.media3.transformer.Composition;
+import androidx.media3.transformer.EditedMediaItem;
+import androidx.media3.transformer.ExportException;
+import androidx.media3.transformer.ExportResult;
+import androidx.media3.transformer.Transformer;
+
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 
+@UnstableApi
 public class MainActivity extends Activity {
     private static final int PICK_VIDEO = 1001;
     private static final int PICK_PHOTOS = 1002;
@@ -37,6 +48,10 @@ public class MainActivity extends Activity {
     private EditText overlayText;
     private Uri videoUri;
     private Uri audioUri;
+    private Uri exportedUri;
+    private File exportedFile;
+    private Transformer transformer;
+    private boolean exporting = false;
     private final ArrayList<Uri> photoUris = new ArrayList<>();
     private MediaRecorder recorder;
     private boolean recording = false;
@@ -129,7 +144,7 @@ public class MainActivity extends Activity {
             String value = overlayText.getText().toString().trim();
             titleOverlay.setText(value);
             titleOverlay.setVisibility(value.isEmpty() ? View.GONE : View.VISIBLE);
-            status.setText("Texto aplicado à prévia. A renderização final com texto será adicionada na etapa de exportação.");
+            status.setText("Texto aplicado à prévia. Ele ainda não é incorporado ao MP4 exportado.");
         });
         Button clearText = button("Limpar texto");
         clearText.setOnClickListener(v -> {
@@ -146,7 +161,7 @@ public class MainActivity extends Activity {
         volume.setProgress(100);
         volume.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (videoView != null && fromUser) status.setText("Volume de prévia: " + progress + "%");
+                if (videoView != null && fromUser) status.setText("Volume exibido: " + progress + "%. O volume do arquivo exportado não é alterado.");
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) { }
             @Override public void onStopTrackingTouch(SeekBar seekBar) { }
@@ -157,17 +172,21 @@ public class MainActivity extends Activity {
         LinearLayout actionRow = new LinearLayout(this);
         Button save = button("Salvar projeto");
         save.setOnClickListener(v -> saveProject());
-        Button share = button("Compartilhar vídeo");
+        Button share = button("Compartilhar MP4");
         share.setOnClickListener(v -> shareVideo());
         actionRow.addView(save, weightParams());
         actionRow.addView(share, weightParams());
         root.addView(actionRow);
 
+        Button export = button("EXPORTAR VÍDEO MP4");
+        export.setOnClickListener(v -> exportVideo());
+        root.addView(export, matchWrap());
+
         Button voice = button("Gravar / parar narração");
         voice.setOnClickListener(v -> toggleRecording());
         root.addView(voice, matchWrap());
 
-        status = label("Importe um vídeo para começar. Os arquivos permanecem no seu celular.");
+        status = label("Importe um vídeo para começar. A exportação cria um MP4 novo no armazenamento do aplicativo.");
         status.setPadding(0, dp(8), 0, 0);
         root.addView(status, matchWrap());
 
@@ -179,11 +198,8 @@ public class MainActivity extends Activity {
         intent.setType(mimeType);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         if (multiple) intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        try {
-            startActivityForResult(intent, requestCode);
-        } catch (Exception e) {
-            toast("Não foi possível abrir os arquivos.");
-        }
+        try { startActivityForResult(intent, requestCode); }
+        catch (Exception e) { toast("Não foi possível abrir os arquivos."); }
     }
 
     @Override
@@ -202,24 +218,73 @@ public class MainActivity extends Activity {
                 photoUris.add(data.getData());
                 keepPermission(data.getData(), data.getFlags());
             }
-            status.setText(photoUris.size() + " foto(s) selecionada(s). A montagem em sequência será feita na etapa de renderização.");
+            status.setText(photoUris.size() + " foto(s) selecionada(s). A montagem de fotos ainda não está disponível na exportação.");
         } else if (requestCode == PICK_AUDIO) {
             audioUri = data.getData();
             keepPermission(audioUri, data.getFlags());
-            status.setText("Áudio selecionado. A mixagem na exportação ainda precisa ser implementada.");
+            status.setText("Áudio selecionado. A mixagem com o vídeo ainda não está implementada.");
         } else if (requestCode == PICK_VIDEO) {
             videoUri = data.getData();
+            exportedUri = null;
             keepPermission(videoUri, data.getFlags());
             videoView.setVideoURI(videoUri);
             videoView.setMediaController(new MediaController(this));
             videoView.setOnPreparedListener(mp -> {
-                status.setText("Vídeo carregado. Use os controles para reproduzir e buscar.");
+                status.setText("Vídeo carregado. Toque em EXPORTAR VÍDEO MP4 para criar uma cópia processada.");
                 videoView.start();
             });
             videoView.setOnErrorListener((mp, what, extra) -> {
                 status.setText("Não foi possível reproduzir esse formato de vídeo.");
                 return true;
             });
+        }
+    }
+
+    private void exportVideo() {
+        if (videoUri == null) {
+            toast("Escolha um vídeo primeiro.");
+            return;
+        }
+        if (exporting) {
+            toast("A exportação já está em andamento.");
+            return;
+        }
+        File movies = getExternalFilesDir(Environment.DIRECTORY_MOVIES);
+        if (movies == null) movies = getFilesDir();
+        if (!movies.exists() && !movies.mkdirs()) {
+            toast("Não foi possível criar a pasta de exportação.");
+            return;
+        }
+        String safeName = projectName.getText().toString().trim().replaceAll("[^a-zA-Z0-9_-]", "_");
+        if (safeName.isEmpty()) safeName = "video";
+        exportedFile = new File(movies, safeName + "_" + System.currentTimeMillis() + ".mp4");
+        status.setText("Exportando MP4... mantenha o aplicativo aberto até concluir.");
+        exporting = true;
+        try {
+            EditedMediaItem editedItem = new EditedMediaItem.Builder(MediaItem.fromUri(videoUri)).build();
+            transformer = new Transformer.Builder(this)
+                    .addListener(new Transformer.Listener() {
+                        @Override
+                        public void onCompleted(Composition composition, ExportResult exportResult) {
+                            exporting = false;
+                            exportedUri = Uri.fromFile(exportedFile);
+                            status.setText("Exportação concluída: " + exportedFile.getName() + ". Use Compartilhar MP4 para enviar o arquivo.");
+                            toast("MP4 exportado com sucesso!");
+                        }
+                        @Override
+                        public void onError(Composition composition, ExportResult exportResult, ExportException exportException) {
+                            exporting = false;
+                            status.setText("Falha ao exportar. Tente outro vídeo compatível e confira o espaço livre.");
+                            if (exportedFile != null && exportedFile.exists()) exportedFile.delete();
+                            toast("Erro na exportação do vídeo.");
+                        }
+                    })
+                    .build();
+            transformer.start(editedItem, exportedFile.getAbsolutePath());
+        } catch (Exception e) {
+            exporting = false;
+            status.setText("Não foi possível iniciar a exportação: " + e.getMessage());
+            toast("Falha ao iniciar exportação.");
         }
     }
 
@@ -264,9 +329,7 @@ public class MainActivity extends Activity {
         if (!savedAudio.isEmpty()) audioUri = Uri.parse(savedAudio);
         String savedPhotos = prefs.getString("photos", "");
         if (!savedPhotos.isEmpty()) {
-            for (String item : savedPhotos.split("\\n")) {
-                if (!item.isEmpty()) photoUris.add(Uri.parse(item));
-            }
+            for (String item : savedPhotos.split("\\n")) if (!item.isEmpty()) photoUris.add(Uri.parse(item));
         }
     }
 
@@ -280,15 +343,16 @@ public class MainActivity extends Activity {
     }
 
     private void shareVideo() {
-        if (videoUri == null) {
-            toast("Escolha um vídeo primeiro.");
+        Uri target = exportedUri != null ? exportedUri : videoUri;
+        if (target == null) {
+            toast("Escolha e exporte um vídeo primeiro.");
             return;
         }
         Intent send = new Intent(Intent.ACTION_SEND);
-        send.setType("video/*");
-        send.putExtra(Intent.EXTRA_STREAM, videoUri);
+        send.setType("video/mp4");
+        send.putExtra(Intent.EXTRA_STREAM, target);
         send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        startActivity(Intent.createChooser(send, "Compartilhar vídeo"));
+        startActivity(Intent.createChooser(send, exportedUri != null ? "Compartilhar MP4 exportado" : "Compartilhar vídeo original"));
     }
 
     private void toggleRecording() {
@@ -314,12 +378,9 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            recordingUri = Uri.fromFile(new java.io.File(getCacheDir(), "narracao_" + System.currentTimeMillis() + ".m4a"));
-            if (Build.VERSION.SDK_INT >= 31) {
-                recorder = new MediaRecorder(this);
-            } else {
-                recorder = new MediaRecorder();
-            }
+            recordingUri = Uri.fromFile(new File(getCacheDir(), "narracao_" + System.currentTimeMillis() + ".m4a"));
+            if (Build.VERSION.SDK_INT >= 31) recorder = new MediaRecorder(this);
+            else recorder = new MediaRecorder();
             recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
@@ -369,6 +430,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (transformer != null && exporting) {
+            try { transformer.cancel(); } catch (Exception ignored) { }
+        }
         if (recorder != null) {
             try { recorder.release(); } catch (Exception ignored) { }
             recorder = null;
