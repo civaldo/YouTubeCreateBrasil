@@ -1,0 +1,16 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'br.com.criadordevideos'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'br.com.criadordevideos'
+        minSdk 23
+        targetSdk 28
+        versionCode 1
+        versionName '1.0'
+    }
+}
