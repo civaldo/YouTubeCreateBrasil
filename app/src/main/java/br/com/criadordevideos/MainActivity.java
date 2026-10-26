@@ -3,6 +3,7 @@ package br.com.criadordevideos;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.media.MediaRecorder;
 import android.net.Uri;
@@ -291,6 +292,11 @@ public class MainActivity extends Activity {
     }
 
     private void toggleRecording() {
+        if (!recording && Build.VERSION.SDK_INT >= 23 && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 2001);
+            status.setText("Autorize o microfone e toque novamente para gravar.");
+            return;
+        }
         if (recording) {
             try {
                 recorder.stop();
